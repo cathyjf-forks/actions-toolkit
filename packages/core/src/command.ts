@@ -1,5 +1,17 @@
 import * as os from 'os'
 import {toCommandValue} from './utils.js'
+import type {Writable} from 'node:stream'
+
+let outputStream: Writable = process.stdout
+
+/** Select the stream used for log messages and workflow commands. */
+export function setOutputStream(stream: Writable): void {
+  outputStream = stream
+}
+
+export function write(message: string): void {
+  outputStream.write(message)
+}
 
 // For internal use, subject to change.
 
@@ -49,7 +61,7 @@ export function issueCommand(
   message: any
 ): void {
   const cmd = new Command(command, properties, message)
-  process.stdout.write(cmd.toString() + os.EOL)
+  write(cmd.toString() + os.EOL)
 }
 
 export function issue(name: string, message = ''): void {

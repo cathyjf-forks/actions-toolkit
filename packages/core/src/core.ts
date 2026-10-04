@@ -1,4 +1,5 @@
-import {issue, issueCommand} from './command.js'
+import {issue, issueCommand, write} from './command.js'
+export {setOutputStream} from './command.js'
 import {issueFileCommand, prepareKeyValueMessage} from './file-command.js'
 import {toCommandProperties, toCommandValue} from './utils.js'
 
@@ -220,7 +221,7 @@ export function setOutput(name: string, value: any): void {
     return issueFileCommand('OUTPUT', prepareKeyValueMessage(name, value))
   }
 
-  process.stdout.write(os.EOL)
+  write(os.EOL)
   issueCommand('set-output', {name}, toCommandValue(value))
 }
 
@@ -320,7 +321,7 @@ export function notice(
  * @param message info message
  */
 export function info(message: string): void {
-  process.stdout.write(message + os.EOL)
+  write(message + os.EOL)
 }
 
 /**
