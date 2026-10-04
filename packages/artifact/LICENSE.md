@@ -1,3 +1,7 @@
+This modified package is licensed under the GNU General Public License,
+version 3 or later; see [LICENSE.GPL-3.0](LICENSE.GPL-3.0). The inherited
+upstream code retains the following MIT notice.
+
 The MIT License (MIT)
 
 Copyright 2019 GitHub

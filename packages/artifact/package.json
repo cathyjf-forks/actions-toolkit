@@ -9,7 +9,7 @@
     "artifact"
   ],
   "homepage": "https://github.com/actions/toolkit/tree/main/packages/artifact",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "main": "lib/artifact.js",
   "types": "lib/artifact.d.ts",

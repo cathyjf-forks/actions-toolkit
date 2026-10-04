@@ -1,3 +1,8 @@
+The modified `@actions/artifact` and `@actions/core` packages in this fork are
+licensed under the GNU General Public License, version 3 or later. Their
+`LICENSE.GPL-3.0` files contain the license text. Unmodified upstream code
+retains the following MIT notice.
+
 The MIT License (MIT)
 
 Copyright 2019 GitHub
