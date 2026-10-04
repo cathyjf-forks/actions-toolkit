@@ -1,6 +1,7 @@
 import {BlobClient, BlockBlobUploadStreamOptions} from '@azure/storage-blob'
 import {TransferProgressEvent} from '@azure/core-http-compat'
-import {WaterMarkedUploadStream} from './stream.js'
+import {Readable} from 'node:stream'
+import {pipeline} from 'node:stream/promises'
 import {
   getUploadChunkSize,
   getConcurrency,
@@ -25,7 +26,7 @@ export interface BlobUploadResponse {
 
 export async function uploadToBlobStorage(
   authenticatedUploadURL: string,
-  uploadStream: WaterMarkedUploadStream,
+  uploadStream: Readable,
   contentType: string
 ): Promise<BlobUploadResponse> {
   let uploadByteCount = 0
@@ -69,24 +70,36 @@ export async function uploadToBlobStorage(
 
   let sha256Hash: string | undefined = undefined
   const blobUploadStream = new stream.PassThrough()
-  const hashStream = crypto.createHash('sha256')
-
-  uploadStream.pipe(blobUploadStream) // This stream is used for the upload
-  uploadStream.pipe(hashStream).setEncoding('hex') // This stream is used to compute a hash of the content for integrity check
+  const hash = crypto.createHash('sha256')
+  const inputTransfer = pipeline(
+    uploadStream,
+    new stream.Transform({
+      transform(chunk, _encoding, callback) {
+        hash.update(chunk)
+        callback(null, chunk)
+      }
+    }),
+    blobUploadStream
+  )
 
   core.info('Beginning upload of artifact content to blob storage')
 
   try {
     await Promise.race([
-      blockBlobClient.uploadStream(
-        blobUploadStream,
-        bufferSize,
-        maxConcurrency,
-        options
-      ),
+      Promise.all([
+        inputTransfer,
+        blockBlobClient.uploadStream(
+          blobUploadStream,
+          bufferSize,
+          maxConcurrency,
+          options
+        )
+      ]),
       chunkTimer(getUploadChunkTimeout())
     ])
   } catch (error) {
+    uploadStream.destroy()
+    blobUploadStream.destroy()
     if (NetworkError.isNetworkErrorCode(error?.code)) {
       throw new NetworkError(error?.code)
     }
@@ -97,8 +110,7 @@ export async function uploadToBlobStorage(
 
   core.info('Finished uploading artifact content to blob storage!')
 
-  hashStream.end()
-  sha256Hash = hashStream.read() as string
+  sha256Hash = hash.digest('hex')
   core.info(`SHA256 digest of uploaded artifact is ${sha256Hash}`)
 
   if (uploadByteCount === 0) {

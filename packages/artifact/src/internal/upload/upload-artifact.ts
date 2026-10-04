@@ -1,6 +1,7 @@
 import * as core from '@actions/core'
 import * as fs from 'fs'
 import * as path from 'path'
+import {Readable} from 'node:stream'
 import {
   UploadArtifactOptions,
   UploadArtifactResponse
@@ -16,7 +17,7 @@ import {
 import {getBackendIdsFromToken} from '../shared/util.js'
 import {uploadToBlobStorage} from './blob-upload.js'
 import {createZipUploadStream} from './zip.js'
-import {createRawFileUploadStream, WaterMarkedUploadStream} from './stream.js'
+import {createRawFileUploadStream} from './stream.js'
 import {
   CreateArtifactRequest,
   FinalizeArtifactRequest,
@@ -66,8 +67,34 @@ export async function uploadArtifact(
     }
   }
 
-  const contentType = getMimeType(artifactFileName)
+  return uploadArtifactContent(
+    name,
+    async () =>
+      options?.skipArchive
+        ? createRawFileUploadStream(files[0])
+        : createZipUploadStream(zipSpecification, options?.compressionLevel),
+    artifactFileName,
+    options
+  )
+}
 
+/** Upload raw bytes from `input`, without archiving or changing `name`. */
+export async function uploadArtifactStream(
+  name: string,
+  input: Readable,
+  options?: Pick<UploadArtifactOptions, 'retentionDays'>
+): Promise<UploadArtifactResponse> {
+  validateArtifactName(name)
+  return uploadArtifactContent(name, async () => input, name, options)
+}
+
+async function uploadArtifactContent(
+  name: string,
+  createInput: () => Promise<Readable>,
+  artifactFileName: string,
+  options?: Pick<UploadArtifactOptions, 'retentionDays'>
+): Promise<UploadArtifactResponse> {
+  const contentType = getMimeType(artifactFileName)
   // get the IDs needed for the artifact creation
   const backendIds = getBackendIdsFromToken()
 
@@ -97,23 +124,10 @@ export async function uploadArtifact(
     )
   }
 
-  let stream: WaterMarkedUploadStream
-
-  if (options?.skipArchive) {
-    // Upload raw file without archiving
-    stream = await createRawFileUploadStream(files[0])
-  } else {
-    // Create and upload zip archive
-    stream = await createZipUploadStream(
-      zipSpecification,
-      options?.compressionLevel
-    )
-  }
-
   core.info(`Uploading artifact: ${artifactFileName}`)
   const uploadResult = await uploadToBlobStorage(
     createArtifactResp.signedUploadUrl,
-    stream,
+    await createInput(),
     contentType
   )
 

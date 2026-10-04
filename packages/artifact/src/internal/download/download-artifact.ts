@@ -3,6 +3,7 @@ import * as fsSync from 'fs'
 import * as crypto from 'crypto'
 import * as stream from 'stream'
 import * as path from 'path'
+import {pipeline} from 'node:stream/promises'
 
 import * as github from '@actions/github'
 import * as core from '@actions/core'
@@ -46,8 +47,14 @@ async function exists(path: string): Promise<boolean> {
 async function streamExtract(
   url: string,
   directory: string,
-  skipDecompress?: boolean
+  skipDecompress?: boolean,
+  outputStream?: stream.Writable
 ): Promise<StreamExtractResponse> {
+  if (outputStream) {
+    // Replaying a partial download would append a second copy to the output.
+    // Only file downloads have a destination that can be replaced on retry.
+    return streamExtractExternal(url, directory, {outputStream})
+  }
   let retryCount = 0
   while (retryCount < 5) {
     try {
@@ -68,7 +75,11 @@ async function streamExtract(
 export async function streamExtractExternal(
   url: string,
   directory: string,
-  opts: {timeout?: number; skipDecompress?: boolean} = {}
+  opts: {
+    timeout?: number
+    skipDecompress?: boolean
+    outputStream?: stream.Writable
+  } = {}
 ): Promise<StreamExtractResponse> {
   const {timeout = 30 * 1000, skipDecompress = false} = opts
   const client = new httpClient.HttpClient(getUserAgentString())
@@ -105,7 +116,7 @@ export async function streamExtractExternal(
     /(?<!\*)filename\s*=\s*['"]?([^;\r\n"']*)['"]?/i
   )
   const rawName = filenameStar?.[1] || filenamePlain?.[1]
-  if (rawName) {
+  if (rawName && !opts.outputStream) {
     // Sanitize fileName to prevent path traversal attacks
     // Use path.basename to extract only the filename component
     fileName = path.basename(decodeURIComponent(rawName.trim()))
@@ -118,59 +129,40 @@ export async function streamExtractExternal(
     `Content-Disposition: ${contentDisposition}, fileName: ${fileName}`
   )
 
-  let sha256Digest: string | undefined = undefined
-
-  return new Promise((resolve, reject) => {
-    const timerFn = (): void => {
-      const timeoutError = new Error(
-        `Blob storage chunk did not respond in ${timeout}ms`
-      )
-      response.message.destroy(timeoutError)
-      reject(timeoutError)
-    }
-    const timer = setTimeout(timerFn, timeout)
-
-    const onError = (error: Error): void => {
-      core.debug(`response.message: Artifact download failed: ${error.message}`)
-      clearTimeout(timer)
-      reject(error)
-    }
-
-    const hashStream = crypto.createHash('sha256').setEncoding('hex')
-    const passThrough = new stream.PassThrough()
-      .on('data', () => {
-        timer.refresh()
-      })
-      .on('error', onError)
-
-    response.message.pipe(passThrough)
-    passThrough.pipe(hashStream)
-
-    const onClose = (): void => {
-      clearTimeout(timer)
-      if (hashStream) {
-        hashStream.end()
-        sha256Digest = hashStream.read() as string
-        core.info(`SHA256 digest of downloaded artifact is ${sha256Digest}`)
-      }
-      resolve({sha256Digest: `sha256:${sha256Digest}`})
-    }
-
+  let destination: NodeJS.WritableStream | undefined = opts.outputStream
+  if (!destination) {
     if (isZip && !skipDecompress) {
-      // Extract zip file
-      passThrough
-        .pipe(unzip.Extract({path: directory}))
-        .on('close', onClose)
-        .on('error', onError)
+      destination = unzip.Extract({path: directory})
     } else {
-      // Save raw file without extracting
       const filePath = path.join(directory, fileName)
-      const writeStream = fsSync.createWriteStream(filePath)
-
+      destination = fsSync.createWriteStream(filePath)
       core.info(`Downloading raw file (non-zip) to: ${filePath}`)
-      passThrough.pipe(writeStream).on('close', onClose).on('error', onError)
     }
-  })
+  }
+  const hash = crypto.createHash('sha256')
+  const timer = setTimeout(() => {
+    response.message.destroy(
+      new Error(`Blob storage chunk did not respond in ${timeout}ms`)
+    )
+  }, timeout)
+  try {
+    await pipeline(
+      response.message,
+      new stream.Transform({
+        transform(chunk, _encoding, callback) {
+          timer.refresh()
+          hash.update(chunk)
+          callback(null, chunk)
+        }
+      }),
+      destination
+    )
+    const sha256Digest = hash.digest('hex')
+    core.info(`SHA256 digest of downloaded artifact is ${sha256Digest}`)
+    return {sha256Digest: `sha256:${sha256Digest}`}
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export async function downloadArtifactPublic(
@@ -180,7 +172,9 @@ export async function downloadArtifactPublic(
   token: string,
   options?: DownloadArtifactOptions
 ): Promise<DownloadArtifactResponse> {
-  const downloadPath = await resolveOrCreateDirectory(options?.path)
+  const downloadPath = options?.outputStream
+    ? undefined
+    : await resolveOrCreateDirectory(options?.path)
 
   const api = github.getOctokit(token)
 
@@ -214,11 +208,14 @@ export async function downloadArtifactPublic(
   )
 
   try {
-    core.info(`Starting download of artifact to: ${downloadPath}`)
+    core.info(
+      `Starting download of artifact to: ${downloadPath ?? 'output stream'}`
+    )
     const extractResponse = await streamExtract(
       location,
-      downloadPath,
-      options?.skipDecompress
+      downloadPath ?? '',
+      options?.skipDecompress,
+      options?.outputStream
     )
     core.info(`Artifact download completed successfully.`)
     if (options?.expectedHash) {
@@ -239,7 +236,9 @@ export async function downloadArtifactInternal(
   artifactId: number,
   options?: DownloadArtifactOptions
 ): Promise<DownloadArtifactResponse> {
-  const downloadPath = await resolveOrCreateDirectory(options?.path)
+  const downloadPath = options?.outputStream
+    ? undefined
+    : await resolveOrCreateDirectory(options?.path)
 
   const artifactClient = internalArtifactTwirpClient()
 
@@ -279,11 +278,14 @@ export async function downloadArtifactInternal(
   )
 
   try {
-    core.info(`Starting download of artifact to: ${downloadPath}`)
+    core.info(
+      `Starting download of artifact to: ${downloadPath ?? 'output stream'}`
+    )
     const extractResponse = await streamExtract(
       signedUrl,
-      downloadPath,
-      options?.skipDecompress
+      downloadPath ?? '',
+      options?.skipDecompress,
+      options?.outputStream
     )
     core.info(`Artifact download completed successfully.`)
     if (options?.expectedHash) {

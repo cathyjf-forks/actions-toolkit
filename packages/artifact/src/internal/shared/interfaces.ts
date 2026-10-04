@@ -1,3 +1,5 @@
+import type {Writable} from 'node:stream'
+
 /**
  * Response from the server when an artifact is uploaded
  */
@@ -109,6 +111,13 @@ export interface DownloadArtifactResponse {
  * Options for downloading an artifact
  */
 export interface DownloadArtifactOptions {
+  /**
+   * Write raw artifact bytes to this stream instead of saving or extracting
+   * files. End the stream when the transfer completes. Failed transfers are
+   * not replayed, since bytes already written to a stream cannot be removed.
+   */
+  outputStream?: Writable
+
   /**
    * Denotes where the artifact will be downloaded to. If not specified then the artifact is download to GITHUB_WORKSPACE
    */
